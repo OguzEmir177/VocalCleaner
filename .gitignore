@@ -1,0 +1,12 @@
+# Kimlik Bilgileri ve Ayarlar
+.env
+
+# Bağımlılıklar
+node_modules/
+
+# Derlenmiş dosyalar (Tercihe bağlı, Render build sırasında oluşturacak)
+dist/
+
+# Sistem dosyaları
+.DS_Store
+Thumbs.db

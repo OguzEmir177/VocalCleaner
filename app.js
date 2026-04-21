@@ -264,10 +264,10 @@ function processFile(file) {
         return;
     }
 
-    // Boyut kontrolü (50MB)
-    const maxSize = 50 * 1024 * 1024;
+    // Boyut kontrolü (500MB)
+    const maxSize = 500 * 1024 * 1024;
     if (file.size > maxSize) {
-        showToast('Dosya boyutu 50MB sınırını aşıyor.', 'error');
+        showToast('Dosya boyutu 500MB sınırını aşıyor.', 'error');
         return;
     }
 

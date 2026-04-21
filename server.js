@@ -18,6 +18,7 @@
  *   3. npm start
  */
 
+require('dotenv').config();
 const express = require('express');
 const multer  = require('multer');
 const cors    = require('cors');
@@ -25,7 +26,6 @@ const path    = require('path');
 const https   = require('https');
 const http    = require('http');
 const fs      = require('fs');
-require('dotenv').config();
 
 const app  = express();
 const PORT = process.env.PORT || 3456;
@@ -42,17 +42,18 @@ const chains = {};
 
 // ===== MIDDLEWARE =====
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '500mb' }));
+app.use(express.urlencoded({ limit: '500mb', extended: true }));
 
 const staticPath = fs.existsSync(path.join(__dirname, 'dist'))
     ? path.join(__dirname, 'dist')
     : __dirname;
 app.use(express.static(staticPath));
 
-// Multer — bellek üzerinde, max 50 MB
+// Multer — bellek üzerinde, max 500 MB
 const upload = multer({
     storage: multer.memoryStorage(),
-    limits: { fileSize: 50 * 1024 * 1024 },
+    limits: { fileSize: 500 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
         const ext = file.originalname.split('.').pop().toLowerCase();
         if (['mp3', 'wav'].includes(ext) ||
@@ -106,7 +107,13 @@ app.post('/api/enhance', upload.single('audio'), async (req, res) => {
             `${CLEANVOICE_BASE_URL}/upload?filename=${encodeURIComponent(filename)}`,
             { method: 'POST', headers: { 'X-API-Key': CLEANVOICE_API_KEY } }
         );
-        if (!upRes.ok) throw new Error(`Upload URL: ${upRes.status} — ${await upRes.text()}`);
+        if (!upRes.ok) {
+            const errText = await upRes.text();
+            let errorMsg = `Upload URL: ${upRes.status} — ${errText}`;
+            if (upRes.status === 401) errorMsg = "API Anahtarı Geçersiz (401)";
+            else if (upRes.status === 429) errorMsg = "Limit Bitti (429)";
+            throw new Error(errorMsg);
+        }
         const { signedUrl } = await upRes.json();
         console.log('[VC] Signed URL alındı.');
 
@@ -129,7 +136,13 @@ app.post('/api/enhance', upload.single('audio'), async (req, res) => {
             headers: { 'X-API-Key': CLEANVOICE_API_KEY, 'Content-Type': 'application/json' },
             body:    JSON.stringify({ input: { files: [fileUrl], config } }),
         });
-        if (!editRes.ok) throw new Error(`Edit: ${editRes.status} — ${await editRes.text()}`);
+        if (!editRes.ok) {
+            const errText = await editRes.text();
+            let errorMsg = `Edit: ${editRes.status} — ${errText}`;
+            if (editRes.status === 401) errorMsg = "API Anahtarı Geçersiz (401)";
+            else if (editRes.status === 429) errorMsg = "Limit Bitti (429)";
+            throw new Error(errorMsg);
+        }
 
         const { id: editId } = await editRes.json();
         console.log(`[VC] Edit job: ${editId}`);
@@ -170,7 +183,11 @@ app.get('/api/status/:editId', async (req, res) => {
             const r = await fetch(`${CLEANVOICE_BASE_URL}/edits/${editId}`, {
                 headers: { 'X-API-Key': CLEANVOICE_API_KEY },
             });
-            if (!r.ok) throw new Error(`CleanVoice status: ${r.status}`);
+            if (!r.ok) {
+                if (r.status === 401) throw new Error("API Anahtarı Geçersiz (401)");
+                if (r.status === 429) throw new Error("Limit Bitti (429)");
+                throw new Error(`CleanVoice status: ${r.status}`);
+            }
             return res.json(await r.json());
         }
 
@@ -193,7 +210,11 @@ app.get('/api/status/:editId', async (req, res) => {
         const r = await fetch(`${CLEANVOICE_BASE_URL}/edits/${editId}`, {
             headers: { 'X-API-Key': CLEANVOICE_API_KEY },
         });
-        if (!r.ok) throw new Error(`CleanVoice status: ${r.status}`);
+        if (!r.ok) {
+            if (r.status === 401) throw new Error("API Anahtarı Geçersiz (401)");
+            if (r.status === 429) throw new Error("Limit Bitti (429)");
+            throw new Error(`CleanVoice status: ${r.status}`);
+        }
         return res.json(await r.json());
 
     } catch (err) {
@@ -303,7 +324,9 @@ async function pollCleanvoice(editId, maxAttempts = 120) {
             headers: { 'X-API-Key': CLEANVOICE_API_KEY },
         });
         if (!r.ok) {
-            console.warn(`[VC] Polling hatası #${i}: ${r.status}`);
+            if (r.status === 401) throw new Error("API Anahtarı Geçersiz (401)");
+            if (r.status === 429) console.warn(`[VC] Polling hatası #${i}: Limit Bitti (429)`);
+            else console.warn(`[VC] Polling hatası #${i}: ${r.status}`);
             await sleep(5000);
             continue;
         }
@@ -525,9 +548,17 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // =========================================================================
 // SERVER BAŞLAT
 // =========================================================================
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
     const cvOk  = !!(CLEANVOICE_API_KEY && CLEANVOICE_API_KEY !== 'your_cleanvoice_api_key_here');
     const auOk  = !!(AUPHONIC_USER && AUPHONIC_PASS);
+
+    console.log(`\n[SYSTEM] Server Başlatılıyor...`);
+    if (cvOk) {
+        console.log(`[SYSTEM] CleanVoice API Anahtarı Aktif: "${CLEANVOICE_API_KEY.substring(0, 4)}..." (Uzunluk: ${CLEANVOICE_API_KEY.length})`);
+    } else {
+        console.log(`[SYSTEM] DİKKAT: CleanVoice API Anahtarı EKSİK veya GEÇERSİZ!`);
+    }
+
     console.log('');
     console.log('  ╔══════════════════════════════════════════════════╗');
     console.log('  ║                                                  ║');
@@ -545,3 +576,6 @@ app.listen(PORT, () => {
     console.log('  ╚══════════════════════════════════════════════════╝');
     console.log('');
 });
+
+// Büyük dosyalar için sunucu zaman aşımını artır (30 dakika)
+server.timeout = 1800000;

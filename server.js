@@ -26,6 +26,7 @@ const path    = require('path');
 const https   = require('https');
 const http    = require('http');
 const fs      = require('fs');
+const os      = require('os');
 
 const app  = express();
 const PORT = process.env.PORT || 3456;
@@ -50,9 +51,16 @@ const staticPath = fs.existsSync(path.join(__dirname, 'dist'))
     : __dirname;
 app.use(express.static(staticPath));
 
-// Multer — bellek üzerinde, max 500 MB
+// Multer — disk üzerinde geçici dosya (büyük dosyalar RAM'i tüketmesin diye)
+const tmpDir = os.tmpdir();
 const upload = multer({
-    storage: multer.memoryStorage(),
+    storage: multer.diskStorage({
+        destination: (req, file, cb) => cb(null, tmpDir),
+        filename: (req, file, cb) => {
+            const safeName = file.originalname.replace(/[^a-zA-Z0-9.\-_]/g, '_');
+            cb(null, `${Date.now()}-${safeName}`);
+        }
+    }),
     limits: { fileSize: 500 * 1024 * 1024 },
     fileFilter: (_req, file, cb) => {
         const ext = file.originalname.split('.').pop().toLowerCase();
@@ -84,6 +92,7 @@ function auphonicAuth() {
 // • Frontend'e hemen { editId } döner; durum polling ile takip edilir
 // =========================================================================
 app.post('/api/enhance', upload.single('audio'), async (req, res) => {
+    let filePath = null;
     try {
         if (!CLEANVOICE_API_KEY || CLEANVOICE_API_KEY === 'your_cleanvoice_api_key_here') {
             return res.status(500).json({
@@ -95,6 +104,7 @@ app.post('/api/enhance', upload.single('audio'), async (req, res) => {
             return res.status(400).json({ error: 'NO_FILE', message: 'Ses dosyası bulunamadı.' });
         }
 
+        filePath = req.file.path;
         const filename  = req.file.originalname;
         const intensity = (req.body?.intensity ?? 'orta').toLowerCase().trim();
 
@@ -118,10 +128,17 @@ app.post('/api/enhance', upload.single('audio'), async (req, res) => {
         console.log('[VC] Signed URL alındı.');
 
         // ── 2. Dosyayı yükle ───────────────────────────────────────────
+        const stat = fs.statSync(filePath);
+        const stream = fs.createReadStream(filePath);
+
         const putRes = await fetch(signedUrl, {
             method:  'PUT',
-            headers: { 'Content-Type': req.file.mimetype || 'application/octet-stream' },
-            body:    req.file.buffer,
+            headers: { 
+                'Content-Type': req.file.mimetype || 'application/octet-stream',
+                'Content-Length': String(stat.size)
+            },
+            body:    stream,
+            duplex:  'half' // Node.js fetch için stream gönderirken gereklidir
         });
         if (!putRes.ok) throw new Error(`PUT: ${putRes.status} — ${await putRes.text()}`);
         const fileUrl = signedUrl.split('?')[0];
@@ -162,6 +179,15 @@ app.post('/api/enhance', upload.single('audio'), async (req, res) => {
     } catch (err) {
         console.error('[VC] /api/enhance hatası:', err.message);
         return res.status(500).json({ error: 'PROCESSING_ERROR', message: err.message });
+    } finally {
+        if (filePath && fs.existsSync(filePath)) {
+            try { 
+                fs.unlinkSync(filePath); 
+                console.log('[VC] Geçici dosya silindi.');
+            } catch (e) { 
+                console.error('[VC] Geçici dosya silme hatası:', e); 
+            }
+        }
     }
 });
 

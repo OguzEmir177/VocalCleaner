@@ -396,33 +396,51 @@ function drawPlayerWaveform(audioBuffer, mode) {
  * Backend; Cleanvoice API'ye yükler, işler ve download_url döndürür.
  * 
  * @param {File} audioFile - İyileştirilecek ses dosyası
- * @param {Function} onProgress - Animasyon aşamalarını senkronize etmek için callback
- * @returns {Promise<string>} İyileştirilmiş sesin URL'i
+ * @param {string} intensity - İyileştirme şiddeti
+ * @param {Function} onProgress - Yükleme ilerlemesini takip etmek için callback
+ * @returns {Promise<string>} İyileştirilmiş sesin URL'i (editId dönüyor)
  */
-async function enhanceAudioWithAPI(audioFile, intensity) {
-    const formData = new FormData();
-    formData.append('intensity', intensity); // Metin alanı dosyadan önce olmalı
-    formData.append('audio', audioFile);
+function enhanceAudioWithAPI(audioFile, intensity, onProgress) {
+    return new Promise((resolve, reject) => {
+        const formData = new FormData();
+        formData.append('intensity', intensity); // Metin alanı dosyadan önce olmalı
+        formData.append('audio', audioFile);
 
-    try {
-        // Backend'e istek at
-        const response = await fetch('/api/enhance', {
-            method: 'POST',
-            body: formData,
-        });
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', '/api/enhance', true);
 
-        if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.message || `Backend Hatası: ${response.status}`);
-        }
+        // Yükleme ilerlemesi (upload progress)
+        xhr.upload.onprogress = function(event) {
+            if (event.lengthComputable) {
+                const percentComplete = (event.loaded / event.total) * 100;
+                if (onProgress) onProgress(percentComplete);
+            }
+        };
 
-        const data = await response.json();
-        return data.editId; // Sadece editId dönüyoruz
+        xhr.onload = function() {
+            if (xhr.status >= 200 && xhr.status < 300) {
+                try {
+                    const data = JSON.parse(xhr.responseText);
+                    resolve(data.editId);
+                } catch (e) {
+                    reject(new Error('Sunucu geçersiz yanıt döndürdü.'));
+                }
+            } else {
+                let errorMsg = `Backend Hatası: ${xhr.status}`;
+                try {
+                    const errorData = JSON.parse(xhr.responseText);
+                    errorMsg = errorData.message || errorMsg;
+                } catch (e) {}
+                reject(new Error(errorMsg));
+            }
+        };
 
-    } catch (error) {
-        console.error('API / Backend başlatma hatası:', error);
-        throw error;
-    }
+        xhr.onerror = function() {
+            reject(new Error('Sunucuya bağlanılamadı. İnternet bağlantınızı kontrol edin.'));
+        };
+
+        xhr.send(formData);
+    });
 }
 
 /**
@@ -505,10 +523,6 @@ async function handleEnhance() {
  * İşleme animasyonunu çalıştır ve API çağrısını senkronize yap
  */
 async function runProcessingAnimation(file, intensity) {
-    // 1. API İşlemini Başlat
-    const editId = await enhanceAudioWithAPI(file, intensity);
-    console.log(`[VocalCleaner] İşlem Id: ${editId} — Şiddet: ${intensity} — Polling başlıyor...`);
-
     // UI Durum Başlıkları
     const stageInfo = [
         { title: 'Dosya Analiz Ediliyor...', sub: 'Yapay zeka ses profilinizi çıkarıyor' },
@@ -520,14 +534,31 @@ async function runProcessingAnimation(file, intensity) {
         { title: 'İşlem Tamamlandı!', sub: 'Temizlenmiş ses dosyanız hazır' }
     ];
 
-    let currentStep = 0;
+    let currentStep = -1; // -1 means uploading
     let progressPercent = 0;
     let isFinished = false;
 
-    // UI'ı başlangıç durumuna getir
-    updateRingProgress(5);
+    // UI'ı başlangıç durumuna getir (Upload aşaması)
+    updateRingProgress(0);
     DOM.steps.forEach(s => s.classList.remove('active', 'completed'));
     DOM.steps[0].classList.add('active');
+    
+    DOM.processingTitle.textContent = 'Dosya Yükleniyor...';
+    DOM.processingStage.textContent = 'Ses dosyanız güvenli sunucularımıza aktarılıyor (%0)';
+
+    // 1. API İşlemini Başlat ve Upload Progress'i Dinle
+    const editId = await enhanceAudioWithAPI(file, intensity, (percent) => {
+        progressPercent = percent * 0.15; // Yüklemeyi %0 - %15 arası ring'de göster
+        updateRingProgress(progressPercent);
+        DOM.processingStage.textContent = `Ses dosyanız güvenli sunucularımıza aktarılıyor (%${Math.round(percent)})`;
+    });
+    
+    console.log(`[VocalCleaner] İşlem Id: ${editId} — Şiddet: ${intensity} — Polling başlıyor...`);
+
+    // Yükleme bitti, ilk analiz aşamasına geçiliyor
+    currentStep = 0;
+    DOM.processingTitle.textContent = stageInfo[0].title;
+    DOM.processingStage.textContent = stageInfo[0].sub;
 
     // Polling Döngüsü
     while (!isFinished) {
